@@ -1,0 +1,16 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  # Long-running server: scraped directly.
+  - job_name: wildfirewatch-api
+    static_configs:
+      - targets: ["api:8000"]
+
+  # Short-lived `wfw ingest`/`wfw process` batch jobs push here on exit
+  # (see src/wildfirewatch/observability.py); scrape the gateway's cache of
+  # those pushes rather than the jobs themselves.
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]

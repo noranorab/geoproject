@@ -10,6 +10,14 @@ from wildfirewatch.db.models import Scene
 from wildfirewatch.db.session import SessionLocal
 from wildfirewatch.ingest.downloader import download_bands_for_aoi, upload_bands
 from wildfirewatch.ingest.stac_client import search_scenes
+from wildfirewatch.observability import (
+    configure_logging,
+    get_logger,
+    push_metrics,
+    scenes_ingested_total,
+)
+
+log = get_logger(__name__)
 
 
 @click.command()
@@ -26,10 +34,12 @@ from wildfirewatch.ingest.stac_client import search_scenes
 @click.option("--limit", default=5, show_default=True, help="Max scenes to ingest")
 def ingest(bbox, start_date, end_date, max_cloud_cover, limit):
     """Search Earth Search STAC and ingest matching Sentinel-2 scenes into MinIO + PostGIS."""
+    configure_logging()
     settings = get_settings()
     items = search_scenes(bbox, start_date, end_date, max_cloud_cover, limit)
     if not items:
-        click.echo("No scenes found for the given filters.")
+        log.info("no_scenes_found", bbox=bbox, start=start_date, end=end_date)
+        push_metrics("wfw_ingest")
         return
 
     session = SessionLocal()
@@ -37,11 +47,12 @@ def ingest(bbox, start_date, end_date, max_cloud_cover, limit):
         for item in items:
             existing = session.query(Scene).filter_by(stac_id=item.id).one_or_none()
             if existing:
-                click.echo(f"Skipping {item.id} (already ingested as {existing.id})")
+                log.info("scene_skipped_existing", stac_id=item.id, scene_id=str(existing.id))
+                scenes_ingested_total.labels(status="skipped").inc()
                 continue
 
             cloud = item.properties.get("eo:cloud_cover", 0.0)
-            click.echo(f"Ingesting {item.id} (cloud cover {cloud:.1f}%)")
+            log.info("ingesting_scene", stac_id=item.id, cloud_cover=cloud)
 
             with tempfile.TemporaryDirectory() as tmp:
                 local_paths = download_bands_for_aoi(item, bbox, Path(tmp))
@@ -59,6 +70,11 @@ def ingest(bbox, start_date, end_date, max_cloud_cover, limit):
             )
             session.add(scene)
             session.commit()
-            click.echo(f"  -> stored scene {scene.id}")
+            scenes_ingested_total.labels(status="success").inc()
+            log.info("scene_ingested", stac_id=item.id, scene_id=str(scene.id))
+    except Exception:
+        scenes_ingested_total.labels(status="failed").inc()
+        raise
     finally:
         session.close()
+        push_metrics("wfw_ingest")

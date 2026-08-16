@@ -1,4 +1,5 @@
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -15,11 +16,21 @@ from shapely.ops import transform as shapely_transform
 from wildfirewatch.config import get_settings
 from wildfirewatch.db.models import Detection, Scene
 from wildfirewatch.db.session import SessionLocal
+from wildfirewatch.observability import (
+    configure_logging,
+    detections_stored_total,
+    get_logger,
+    processing_duration_seconds,
+    processing_jobs_total,
+    push_metrics,
+)
 from wildfirewatch.processing.burn_detection import vectorize_burn_areas
 from wildfirewatch.processing.indices import dnbr as compute_dnbr
 from wildfirewatch.processing.indices import nbr as compute_nbr
 from wildfirewatch.processing.indices import ndvi as compute_ndvi
 from wildfirewatch.storage.s3 import download_file, upload_file
+
+log = get_logger(__name__)
 
 
 def _read_band(scene: Scene, band: str, bucket: str, tmp: Path):
@@ -70,8 +81,10 @@ def _valid_mask(scl: np.ndarray) -> np.ndarray:
 @click.option("--post-scene-id", required=True, type=click.UUID, help="Post-fire scene to detect burns in")
 def process(pre_scene_id, post_scene_id):
     """Compute NDVI/NBR/dNBR for a pre/post scene pair and store burn-area detections."""
+    configure_logging()
     settings = get_settings()
     session = SessionLocal()
+    started = time.perf_counter()
     try:
         pre_scene = session.get(Scene, pre_scene_id)
         post_scene = session.get(Scene, post_scene_id)
@@ -83,10 +96,10 @@ def process(pre_scene_id, post_scene_id):
             bucket = settings.s3_raw_bucket
 
             # NIR (10m) is the reference grid everything else resamples onto.
-            click.echo("Reading + aligning bands...")
+            log.info("reading_bands", pre_scene_id=str(pre_scene_id), post_scene_id=str(post_scene_id))
             post_nir, post_transform, post_crs = _read_band(post_scene, "nir", bucket, tmp)
             post_shape = post_nir.shape
-            click.echo(f"  grid: {post_shape[1]}x{post_shape[0]} px")
+            log.info("grid_resolved", width=post_shape[1], height=post_shape[0])
 
             post_swir2_raw, post_swir2_t, post_swir2_crs = _read_band(post_scene, "swir22", bucket, tmp)
             post_swir2 = _align_to(post_swir2_raw, post_swir2_t, post_swir2_crs, post_transform, post_crs, post_shape)
@@ -111,7 +124,7 @@ def process(pre_scene_id, post_scene_id):
                 pre_scl_raw, pre_scl_t, pre_scl_crs, post_transform, post_crs, post_shape, Resampling.nearest
             )
             valid_mask = _valid_mask(post_scl) & _valid_mask(pre_scl)
-            click.echo(f"  {valid_mask.mean() * 100:.1f}% of pixels valid (cloud/water/snow masked)")
+            log.info("valid_mask_computed", valid_pct=round(valid_mask.mean() * 100, 1))
 
             pre_nbr = compute_nbr(pre_nir, pre_swir2)
             post_nbr = compute_nbr(post_nir, post_swir2)
@@ -119,9 +132,9 @@ def process(pre_scene_id, post_scene_id):
             dnbr = np.where(valid_mask, dnbr, 0.0)
             post_ndvi = compute_ndvi(post_nir, post_red)
 
-            click.echo("Vectorizing burn-severity polygons...")
+            log.info("vectorizing_burn_areas")
             burn_polygons = vectorize_burn_areas(dnbr, post_transform, min_area_px=25)
-            click.echo(f"Found {len(burn_polygons)} burn-severity polygons")
+            log.info("burn_polygons_found", count=len(burn_polygons))
 
             transformer = Transformer.from_crs(post_crs, "EPSG:4326", always_xy=True)
 
@@ -155,6 +168,13 @@ def process(pre_scene_id, post_scene_id):
 
             post_scene.processing_status = "processed"
             session.commit()
-            click.echo(f"Stored {len(burn_polygons)} detections for scene {post_scene.id}")
+            detections_stored_total.inc(len(burn_polygons))
+            processing_jobs_total.labels(status="success").inc()
+            log.info("processing_complete", scene_id=str(post_scene.id), detections=len(burn_polygons))
+    except Exception:
+        processing_jobs_total.labels(status="failed").inc()
+        raise
     finally:
+        processing_duration_seconds.observe(time.perf_counter() - started)
         session.close()
+        push_metrics("wfw_process")

@@ -18,6 +18,9 @@ class Settings(BaseSettings):
     stac_api_url: str = "https://earth-search.aws.element84.com/v1"
     stac_collection: str = "sentinel-2-l2a"
 
+    log_format: str = "console"  # "console" (dev) or "json" (production/containers)
+    pushgateway_url: str | None = None  # e.g. http://pushgateway:9091; unset disables metric push
+
 
 @lru_cache
 def get_settings() -> Settings:

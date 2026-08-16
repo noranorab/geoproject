@@ -1,12 +1,15 @@
 FROM python:3.11-slim
 
+# rasterio's manylinux wheels bundle GDAL/PROJ (see Dockerfile.airflow), but
+# still dynamically link libexpat, which python:3.11-slim doesn't ship.
+RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-COPY pyproject.toml ./
+COPY pyproject.toml alembic.ini ./
 COPY src ./src
 
-# rasterio's manylinux wheels bundle GDAL/PROJ, and the API doesn't touch
-# rasterio directly anyway (see Dockerfile.airflow for the same reasoning).
 RUN pip install --no-cache-dir -e .
 
 EXPOSE 8000

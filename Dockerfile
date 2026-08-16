@@ -1,15 +1,13 @@
-FROM ghcr.io/osgeo/gdal:ubuntu-small-3.8.4
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-pip \
-    && rm -rf /var/lib/apt/lists/*
+FROM python:3.11-slim
 
 WORKDIR /app
 
 COPY pyproject.toml ./
 COPY src ./src
 
-RUN pip install --no-cache-dir --break-system-packages -e .
+# rasterio's manylinux wheels bundle GDAL/PROJ, and the API doesn't touch
+# rasterio directly anyway (see Dockerfile.airflow for the same reasoning).
+RUN pip install --no-cache-dir -e .
 
 EXPOSE 8000
 

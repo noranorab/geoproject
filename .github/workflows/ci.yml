@@ -37,10 +37,32 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check src tests
+        run: ruff check src tests airflow
 
       - name: Test
         run: pytest -v
+
+  airflow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Airflow image
+        run: docker build -f Dockerfile.airflow -t wfw-airflow-ci .
+
+      - name: Check DAG imports
+        run: |
+          docker run --rm --entrypoint python \
+            -v "${{ github.workspace }}/airflow/dags:/opt/airflow/dags" \
+            wfw-airflow-ci -c "
+          from airflow.dag_processing.dagbag import DagBag
+          bag = DagBag(dag_folder='/opt/airflow/dags')
+          for path, error in bag.import_errors.items():
+              print(f'{path}: {error}')
+          assert not bag.import_errors, 'DAG import errors found'
+          assert bag.dags, 'No DAGs found in dag_folder'
+          print('DAGs loaded OK:', list(bag.dags))
+          "
 
   frontend:
     runs-on: ubuntu-latest

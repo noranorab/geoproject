@@ -22,3 +22,10 @@ data/
 # k8s: real secrets, never the .example.yaml template
 k8s/*secret*.yaml
 !k8s/*.example.yaml
+
+# terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/terraform.tfvars
+terraform/*.tfplan

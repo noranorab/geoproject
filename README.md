@@ -65,13 +65,14 @@ with clean before/after Sentinel-2 coverage). Any bbox/date range works.
 ## Tests
 
 ```bash
-pytest -v            # index math + burn-vectorization run standalone
-                      # API tests additionally require: docker compose up -d postgres
-ruff check src tests
+pytest -v                    # index math + burn-vectorization run standalone
+                              # API tests additionally require: docker compose up -d postgres
+ruff check src tests airflow
 ```
 
-CI (`.github/workflows/ci.yml`) runs both against a PostGIS service container, plus a
-frontend type-check/build.
+CI (`.github/workflows/ci.yml`) runs the above against a PostGIS service container, a DAG
+import-error check (builds `Dockerfile.airflow` and loads `airflow/dags` with `DagBag`, no live
+Airflow DB needed), and a frontend type-check/build.
 
 ## Design notes
 
@@ -104,14 +105,88 @@ docker compose up -d airflow   # http://localhost:8080 (user: admin, password:
 ```
 
 Runs with `SequentialExecutor`/SQLite (`airflow standalone`) for local/demo use; a real
-deployment would move to `LocalExecutor`/`CeleryExecutor` with a dedicated metadata DB, per the
-Kubernetes roadmap item below.
+deployment would move to `LocalExecutor`/`CeleryExecutor` with a dedicated metadata DB.
+
+## Observability
+
+Structured logging (`structlog`) and Prometheus metrics across the API and the `wfw`
+ingest/process CLI:
+
+- **API**: a request-logging middleware plus `prometheus-fastapi-instrumentator` exposing
+  `GET /metrics` — it's a long-running process, so Prometheus scrapes it directly.
+- **CLI**: `wfw ingest`/`wfw process` are short-lived batch jobs instead, so they push metrics
+  (scenes ingested, processing duration/outcome, detections stored) to a Prometheus Pushgateway
+  on exit — best-effort, a monitoring outage never fails the pipeline.
+- `LOG_FORMAT=json` switches logging from human-readable console output (the default, for local
+  runs) to JSON (set by `docker-compose.yml` for the `api`/`airflow` services).
+
+```bash
+docker compose up -d prometheus pushgateway grafana
+# Prometheus:  http://localhost:9090  (Status > Targets)
+# Grafana:     http://localhost:3000  (anonymous viewer access; admin/admin to edit) — the
+#              WildfireWatch dashboard is auto-provisioned from monitoring/grafana/
+```
+
+## Kubernetes
+
+Plain YAML manifests in `k8s/`, applied in filename order, mapping each existing piece onto
+native primitives without changing any application code — the same "pure function of its
+inputs/outputs" design that lets `wfw ingest`/`wfw process` become Airflow tasks also lets them
+become Kubernetes Jobs:
+
+- `00`–`02`: namespace, ConfigMap, and a Secret **template** (`02-secret.example.yaml` — copy to
+  `02-secret.yaml`, fill in real values; that filename is gitignored).
+- `03`–`04`: self-hosted `postgres`/`minio`, PVC-backed — for dev/demo clusters. Point
+  `DATABASE_URL`/`S3_ENDPOINT_URL` at the Terraform-managed RDS/S3 instead for production, and
+  drop these two files.
+- `05`: a `migrate` Job (`alembic upgrade head`), run once before rolling out `api`.
+- `06`: the `api` Deployment (2 replicas) + Service.
+- `07`: `ingest-rhodes-greece`, a weekly CronJob running `wfw ingest` for the demo AOI over a
+  rolling window.
+- `08`: a `process` Job **template** — `wfw process` needs a specific pre/post scene pair, and
+  picking that pair is exactly the DB-query logic in `select_scene_pair` (see Airflow, above),
+  so this isn't a blind CronJob. Submit it with real ids:
+  `PRE_SCENE_ID=... POST_SCENE_ID=... envsubst < k8s/08-process-job.yaml | kubectl create -f -`
+
+```bash
+kubectl apply -f k8s/00-namespace.yaml -f k8s/01-configmap.yaml -f k8s/02-secret.yaml
+kubectl apply -f k8s/03-postgres.yaml -f k8s/04-minio.yaml
+kubectl apply -f k8s/05-migrate-job.yaml
+kubectl wait --for=condition=complete job/migrate -n wildfirewatch --timeout=90s
+kubectl apply -f k8s/06-api.yaml -f k8s/07-ingest-cronjob.yaml
+```
+
+Verified on a local cluster: every manifest applies and every pod reaches Ready, the ingest
+CronJob's Job hit the live Earth Search STAC API and stored a real Sentinel-2 scene, and the
+process Job template ran the full band-read/align/dNBR/vectorize pipeline to completion —
+confirmed by querying the `api` Service from inside the cluster.
+
+## AWS (Terraform)
+
+`terraform/` provisions the production-hosted equivalent of the stack above: S3 (raw +
+processed buckets, replacing MinIO), RDS PostgreSQL (replacing the `postgres` container — enable
+PostGIS once with `CREATE EXTENSION postgis;` after the first apply, same as locally), EKS (runs
+the same `k8s/` manifests), an ECR repository for the `api` image, and CloudWatch (EKS
+control-plane log group, an app log group, an RDS free-storage alarm).
+
+Written and validated (`terraform fmt`, `terraform validate`, and `terraform plan` — which gets
+through building the full resource graph and only fails for lack of AWS credentials), but **not
+applied** — review it, set a real `db_password`, and run it yourself:
+
+```bash
+cd terraform
+cp terraform.tfvars.example terraform.tfvars   # or set TF_VAR_db_password in the environment
+terraform init
+terraform plan
+terraform apply
+```
 
 ## Roadmap (not built in this pass)
 
-- **Kubernetes**: Deployments for the API, CronJob/Job for ingestion+processing workers,
-  ConfigMaps/Secrets for config, PVC-backed or cloud object storage.
-- **AWS**: S3 for raw/processed buckets, EKS for the K8s workloads, RDS PostgreSQL (PostGIS
-  extension) for the database, CloudWatch for logs/metrics.
-- **Observability**: structured logging, Prometheus metrics (images processed, processing
-  duration, failed jobs), Grafana dashboards.
+- **EKS ingress/IRSA**: an ALB ingress controller for the `api` Service, and IRSA so pods use
+  scoped IAM roles instead of the node role.
+- **Shipping container logs to CloudWatch**: the `app` log group in `terraform/cloudwatch.tf`
+  exists, but nothing yet ships the `api`/`wfw` containers' JSON stdout into it (e.g. the
+  CloudWatch Container Insights EKS addon).
+- **Grafana alerting**: the dashboard is read-only; no alert rules are wired to the failure/
+  latency panels yet.

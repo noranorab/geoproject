@@ -80,9 +80,35 @@ scheduler — each one is a pure function of its inputs/outputs (STAC query → 
 scene pair → MinIO + DB rows), so each becomes a single Airflow task or Kubernetes Job without
 a rewrite.
 
+## Orchestration (Airflow)
+
+`airflow/dags/wildfirewatch_dag.py` wraps `wfw ingest` → `wfw process` → notify as a weekly,
+per-AOI DAG, without modifying either CLI command:
+
+- `ingest_baseline` / `ingest_current` (`BashOperator`): run `wfw ingest` for a fixed pre-fire
+  baseline window and a rolling current window (`lookback_days` ending at the DAG run date).
+- `select_scene_pair` (`@task`): queries PostGIS directly for the lowest-cloud-cover baseline
+  scene and the newest not-yet-processed current scene; skips the AOI if either is missing.
+- `process_pair` (`BashOperator`): runs `wfw process --pre-scene-id ... --post-scene-id ...`
+  with the ids selected above.
+- `notify` (`@task`): logs a summary if new detections were stored, and POSTs to the Airflow
+  Variable `wfw_notify_webhook_url` if one is set.
+
+AOIs come from the Airflow Variable `wfw_aois` (JSON list of `{name, bbox, baseline_start,
+baseline_end, max_cloud_cover, lookback_days}`); with no Variable set, it defaults to the
+Rhodes demo AOI above.
+
+```bash
+docker compose up -d airflow   # http://localhost:8080 (user: admin, password:
+                                # `docker compose exec airflow cat /opt/airflow/simple_auth_manager_passwords.json.generated`)
+```
+
+Runs with `SequentialExecutor`/SQLite (`airflow standalone`) for local/demo use; a real
+deployment would move to `LocalExecutor`/`CeleryExecutor` with a dedicated metadata DB, per the
+Kubernetes roadmap item below.
+
 ## Roadmap (not built in this pass)
 
-- **Orchestration**: Airflow DAG wrapping `ingest` → `process` → notify, scheduled per AOI.
 - **Kubernetes**: Deployments for the API, CronJob/Job for ingestion+processing workers,
   ConfigMaps/Secrets for config, PVC-backed or cloud object storage.
 - **AWS**: S3 for raw/processed buckets, EKS for the K8s workloads, RDS PostgreSQL (PostGIS

@@ -63,6 +63,28 @@ services:
     volumes:
       - ./src:/app/src
 
+  airflow:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    command: standalone
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://wfw:wfw@postgres:5432/wildfirewatch
+      S3_ENDPOINT_URL: http://minio:9000
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_data:/opt/airflow
+
 volumes:
   pgdata:
   miniodata:
+  airflow_data:

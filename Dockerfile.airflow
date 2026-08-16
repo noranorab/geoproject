@@ -1,0 +1,11 @@
+FROM apache/airflow:3.3.1-python3.11
+
+USER root
+RUN mkdir -p /opt/wildfirewatch && chown -R airflow:root /opt/wildfirewatch
+COPY --chown=airflow:root pyproject.toml /opt/wildfirewatch/pyproject.toml
+COPY --chown=airflow:root src /opt/wildfirewatch/src
+
+USER airflow
+# rasterio's manylinux wheels bundle GDAL/PROJ, so no system GDAL needed on top of
+# the base Airflow image; this makes the `wfw` CLI available to DAG tasks.
+RUN pip install --no-cache-dir -e /opt/wildfirewatch

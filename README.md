@@ -62,12 +62,32 @@ npm run dev   # http://localhost:5173
 Demo AOI used for validation: Rhodes, Greece — July 2023 wildfires (well-documented event
 with clean before/after Sentinel-2 coverage). Any bbox/date range works.
 
+## Hosted preview (Render)
+
+`render.yaml` deploys a **read-only** preview: `GET /scenes` and `GET /detections` only ever
+read Postgres (see `src/wildfirewatch/api/routers/`), so this intentionally has no MinIO/S3 —
+there's nothing here to ingest or process into. On deploy, the `api` service runs `alembic
+upgrade head` and then `scripts/seed_demo.py`, which idempotently loads
+`demo/rhodes_2023_fixture.json` — the actual output of a real `wfw ingest` + `wfw process` run
+against the pre/post Rhodes wildfire scenes above, not synthetic data.
+
+1. Push this repo to your own GitHub, then in the Render dashboard: **New > Blueprint**, point
+   it at the repo — it reads `render.yaml` and creates the `wildfirewatch-db` Postgres plus the
+   `wildfirewatch-api` and `wildfirewatch-frontend` services.
+2. If Render assigns the `api` service a different hostname than `wildfirewatch-api.onrender.com`
+   (only happens if that name's taken), update the `destination` in `render.yaml`'s frontend
+   `routes` to match, and redeploy the frontend.
+
+Render's **free Postgres is deleted after its trial period ends** — when that happens, create a
+new free database, point `wildfirewatch-api`'s `DATABASE_URL` at it, and redeploy; the seed step
+repopulates the same real detections automatically.
+
 ## Tests
 
 ```bash
 pytest -v                    # index math + burn-vectorization run standalone
                               # API tests additionally require: docker compose up -d postgres
-ruff check src tests airflow
+ruff check src tests airflow scripts
 ```
 
 CI (`.github/workflows/ci.yml`) runs the above against a PostGIS service container, a DAG
@@ -164,10 +184,10 @@ confirmed by querying the `api` Service from inside the cluster.
 ## AWS (Terraform)
 
 `terraform/` provisions the production-hosted equivalent of the stack above: S3 (raw +
-processed buckets, replacing MinIO), RDS PostgreSQL (replacing the `postgres` container — enable
-PostGIS once with `CREATE EXTENSION postgis;` after the first apply, same as locally), EKS (runs
-the same `k8s/` manifests), an ECR repository for the `api` image, and CloudWatch (EKS
-control-plane log group, an app log group, an RDS free-storage alarm).
+processed buckets, replacing MinIO), RDS PostgreSQL (replacing the `postgres` container —
+`alembic upgrade head` enables PostGIS itself, same as locally), EKS (runs the same `k8s/`
+manifests), an ECR repository for the `api` image, and CloudWatch (EKS control-plane log group,
+an app log group, an RDS free-storage alarm).
 
 Written and validated (`terraform fmt`, `terraform validate`, and `terraform plan` — which gets
 through building the full resource graph and only fails for lack of AWS credentials), but **not

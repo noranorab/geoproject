@@ -1,8 +1,8 @@
 # Replaces the postgis/postgis:16-3.4 container. RDS Postgres supports the
 # postgis extension out of the box (no custom parameter group needed) --
-# after this applies, connect once and run `CREATE EXTENSION postgis;`
-# (the Alembic migration in src/wildfirewatch/migrations doesn't do this
-# for you, same as it doesn't against the local docker-compose postgres).
+# the Alembic migration (src/wildfirewatch/migrations) runs
+# `CREATE EXTENSION IF NOT EXISTS postgis` itself on `alembic upgrade head`,
+# same as it does against the local docker-compose postgres.
 
 resource "aws_security_group" "rds" {
   name_prefix = "${var.project}-rds-"

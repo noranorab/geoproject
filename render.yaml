@@ -1,0 +1,56 @@
+# Render Blueprint for a read-only hosted preview -- NOT the full pipeline.
+# The api service here only serves GET /scenes and /detections, which read
+# from Postgres alone (see src/wildfirewatch/api/routers/); neither route
+# touches S3/MinIO, so this intentionally skips object storage entirely.
+# Real ingestion/processing runs locally / via Airflow / via k8s (see
+# README) against MinIO or S3, not here.
+#
+# On first deploy (and on every redeploy), the api service runs
+# `alembic upgrade head` (creates the schema + postgis extension) and then
+# scripts/seed_demo.py, which loads demo/rhodes_2023_fixture.json -- the
+# actual output of a real `wfw ingest` + `wfw process` run against the 2023
+# Rhodes, Greece wildfire (see README Quickstart) -- idempotently, so it's a
+# no-op once the data is already there.
+#
+# Render's free Postgres is deleted after its trial period ends; when that
+# happens, recreate the database and redeploy -- the seed step repopulates
+# real detections automatically, no manual data entry needed.
+
+databases:
+  - name: wildfirewatch-db
+    databaseName: wildfirewatch
+    user: wfw
+    plan: free
+
+services:
+  - type: web
+    name: wildfirewatch-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    dockerCommand: >-
+      sh -c "alembic upgrade head && python scripts/seed_demo.py &&
+      uvicorn wildfirewatch.api.main:app --host 0.0.0.0 --port 8000"
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: wildfirewatch-db
+          property: connectionString
+      - key: LOG_FORMAT
+        value: json
+
+  - type: web
+    name: wildfirewatch-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: ./dist
+    routes:
+      - type: rewrite
+        source: /api/*
+        destination: https://wildfirewatch-api.onrender.com/*
+      - type: rewrite
+        source: /*
+        destination: /index.html

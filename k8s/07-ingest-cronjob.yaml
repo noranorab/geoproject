@@ -1,0 +1,33 @@
+# Same "pure function of its inputs/outputs" CLI command the Airflow DAG's
+# ingest_baseline/ingest_current BashOperators run (see airflow/dags) --
+# native Kubernetes primitive for the same step, no code changes needed.
+# Demo AOI hardcoded here for simplicity; a fleet of AOIs is what the
+# Airflow DAG (which reads them from a Variable) is for.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ingest-rhodes-greece
+  namespace: wildfirewatch
+spec:
+  schedule: "0 3 * * 1" # weekly, Monday 03:00 UTC
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: wfw-ingest
+              image: wildfirewatch-api:latest
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/sh
+                - -c
+                - >-
+                  wfw ingest --bbox 27.9 36.0 28.2 36.3
+                  --start "$(date -u -d '-15 days' +%Y-%m-%d)"
+                  --end "$(date -u +%Y-%m-%d)"
+                  --max-cloud-cover 20 --limit 5
+              envFrom:
+                - configMapRef: { name: wildfirewatch-config }
+                - secretRef: { name: wildfirewatch-secrets }

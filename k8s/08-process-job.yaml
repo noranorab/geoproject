@@ -1,0 +1,32 @@
+# Template, not applied on its own -- `wfw process` needs a specific
+# pre/post scene pair, and picking that pair is exactly the DB-query logic
+# in airflow/dags/wildfirewatch_dag.py's select_scene_pair task. Outside of
+# Airflow, substitute the two ids and submit as a one-off Job, e.g.:
+#   PRE_SCENE_ID=... POST_SCENE_ID=... envsubst < 08-process-job.yaml | kubectl create -f -
+# (kubectl create, not apply -- apply doesn't support generateName)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  generateName: wfw-process-
+  namespace: wildfirewatch
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: wfw-process
+          image: wildfirewatch-api:latest
+          imagePullPolicy: IfNotPresent
+          command:
+            [
+              "wfw",
+              "process",
+              "--pre-scene-id",
+              "${PRE_SCENE_ID}",
+              "--post-scene-id",
+              "${POST_SCENE_ID}",
+            ]
+          envFrom:
+            - configMapRef: { name: wildfirewatch-config }
+            - secretRef: { name: wildfirewatch-secrets }

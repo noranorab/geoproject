@@ -1,0 +1,19 @@
+# Non-secret application config. Values below point at the self-hosted
+# postgres/minio also defined in this directory (dev/demo cluster); for a
+# production cluster, point S3_ENDPOINT_URL/S3_REGION at AWS S3 and drop the
+# postgres/minio manifests in favor of the RDS instance in terraform/.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: wildfirewatch-config
+  namespace: wildfirewatch
+data:
+  POSTGRES_USER: "wfw"
+  POSTGRES_DB: "wildfirewatch"
+  S3_ENDPOINT_URL: "http://minio:9000"
+  S3_RAW_BUCKET: "wildfirewatch-raw"
+  S3_PROCESSED_BUCKET: "wildfirewatch-processed"
+  S3_REGION: "us-east-1"
+  STAC_API_URL: "https://earth-search.aws.element84.com/v1"
+  STAC_COLLECTION: "sentinel-2-l2a"
+  LOG_FORMAT: "json"
